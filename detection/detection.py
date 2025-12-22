@@ -1,13 +1,17 @@
-# --- Install dependencies in Colab ---
-# !pip install ultralytics shapely opencv-python
-
+# =============================================
+# RabbitMQ Detection Service (detection.py)
+# Run this in another terminal: python detection.py
+# (After starting frame_reader in separate terminal)
+# =============================================
 import cv2
 import numpy as np
 from shapely.geometry import Polygon, box
 from ultralytics import YOLO
+import pika
+import pickle
 
 # ---- Load YOLO model ----
-model = YOLO("yolo12m-v2.pt")  # place model in Colab working dir
+model = YOLO("yolo12m-v2.pt")
 
 # ---- ROI setup ----
 CONTAINER_ROI = np.array(
@@ -21,16 +25,21 @@ def in_roi(bbox):
     return ROI_POLY.intersects(box(*bbox))
 
 
-def process_video(video_path, out_path):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise Exception("Could not open video file")
+def detection_service(queue_name="frames", out_path="output_cycle_violation.mp4"):
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25
-    w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(
-        cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    )
-    out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+    # --- CRITICAL FIX: Add your credentials here ---
+    credentials = pika.PlainCredentials("admin", "strongpassword")
+    parameters = pika.ConnectionParameters(host="localhost", credentials=credentials)
+
+    # Connect to RabbitMQ
+    connection = pika.BlockingConnection(parameters)
+    channel = connection.channel()
+    channel.queue_declare(queue=queue_name, durable=True)
+
+    # Prepare video writer (we'll init after first frame)
+    out = None
+    fps = 25  # Default, will update if possible
+    w, h = None, None
 
     # ---- State ----
     frame_id = 0
@@ -38,16 +47,40 @@ def process_video(video_path, out_path):
     detections = []
     hand_inside = False
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    def callback(ch, method, properties, body):
+        nonlocal out, fps, w, h, frame_id, violation_count, detections, hand_inside
 
-        # Run YOLO detection
-        results = model.predict(frame, conf=0.2, iou=0.5, verbose=False)
+        data = pickle.loads(body)
+
+        if "end" in data:
+            # End of video — finalize
+            if out:
+                out.release()
+            print(f"Video saved: {out_path}")
+            print(f"Final violations detected: {violation_count}")
+            print("Detection log:", detections)
+            ch.stop_consuming()
+            return
+
+        # Get frame
+        received_frame_id = data["frame_id"]
+        frame = data["frame"]
+
+        # Init writer on first frame
+        if out is None:
+            h, w = frame.shape[:2]
+            fps = 25  # Use default since no cap here; adjust if known
+            out = cv2.VideoWriter(
+                out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h)
+            )
+
+        # Run YOLO detection (your original logic)
+        results = model.predict(frame, conf=0.2, iou=0.5, verbose=False, device="cuda")
 
         hands, scoops = [], []
         for result in results:
+            if result.boxes is None:
+                continue
             for box in result.boxes:
                 x1, y1, x2, y2 = box.xyxy.cpu().numpy()[0]
                 cls_id = int(box.cls.cpu().numpy()[0])
@@ -85,25 +118,23 @@ def process_video(video_path, out_path):
         # Draw ROI
         cv2.polylines(frame, [CONTAINER_ROI], True, (0, 255, 255), 2)
 
-        # State checks
+        # State checks (your original logic)
         current_hands_in_roi = sum(in_roi(h) for h in hands)
         scooper_inside = any(in_roi(s) for s in scoops)
 
-        # ---- Cycle-based violation logic ----
         if current_hands_in_roi > 0 and not hand_inside:
             # Hand just entered ROI
             hand_inside = True
-
             if not scooper_inside:  # scooper didn't move
                 violation_count += 1
                 msg = f"VIOLATION #{violation_count}: Hand entered ROI without scooper"
-                detections.append({"frame_id": frame_id, "event": msg})
+                detections.append({"frame_id": received_frame_id, "event": msg})
                 cv2.putText(
                     frame, msg, (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2
                 )
             else:
                 msg = "Hand + scooper action (OK)"
-                detections.append({"frame_id": frame_id, "event": msg})
+                detections.append({"frame_id": received_frame_id, "event": msg})
                 cv2.putText(
                     frame, msg, (50, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2
                 )
@@ -123,19 +154,25 @@ def process_video(video_path, out_path):
             2,
         )
 
+        # Write to output
         out.write(frame)
-        frame_id += 1
+        print(f"Processed frame {received_frame_id}")
 
-    cap.release()
-    out.release()
+        ch.basic_ack(delivery_tag=method.delivery_tag)  # Acknowledge
+
+    channel.basic_qos(prefetch_count=1)  # Fair dispatch
+    channel.basic_consume(queue=queue_name, on_message_callback=callback)
+
+    print("Detection service started. Waiting for frames...")
+    channel.start_consuming()
+
+    connection.close()
     return {"total_violations": violation_count, "detections": detections}
 
 
-# ---- Example run ----
-video_path = "Sahwb3dhaghalt(2).mp4"  # put video in Colab working dir
-out_path = "output_cycle_violation1.mp4"
-results = process_video(video_path, out_path)
-
+# Run example
+out_path = "output_cycle_violation.mp4"
+results = detection_service(out_path=out_path)
 print(f"Video saved: {out_path}")
 print(f"Final violations detected: {results['total_violations']}")
 print("Detection log:", results["detections"])
