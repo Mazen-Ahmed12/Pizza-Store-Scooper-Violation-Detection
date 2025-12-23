@@ -1,7 +1,3 @@
-# =============================================
-# RabbitMQ Frame Reader Service (frame_reader.py)
-# Run this in one terminal: python frame_reader.py
-# =============================================
 import cv2
 import pika
 import pickle
@@ -9,12 +5,10 @@ import sys  # Import sys for better error handling
 
 
 def frame_reader(video_path, queue_name="frames"):
-    # Open video
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise Exception("Could not open video file")
 
-    # --- CRITICAL FIX: Add your credentials here ---
     # Use the username and password you set in your Docker command
     credentials = pika.PlainCredentials("admin", "strongpassword")
     parameters = pika.ConnectionParameters(host="localhost", credentials=credentials)
@@ -39,7 +33,6 @@ def frame_reader(video_path, queue_name="frames"):
         if not ret:
             break
 
-        # Serialize frame + metadata
         data = pickle.dumps({"frame_id": frame_id, "frame": frame})
 
         # Publish to queue
@@ -58,6 +51,5 @@ def frame_reader(video_path, queue_name="frames"):
     connection.close()
 
 
-# Run example
-video_path = "Sahwb3dhaghalt(2).mp4"  # Your video
+video_path = "Sahwb3dhaghalt(2).mp4"
 frame_reader(video_path)
