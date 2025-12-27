@@ -1,57 +1,57 @@
 import pika
 import pickle
 import psycopg
-
-# Psycopg 3 Connection
-conn_string = "host=localhost port=5432 user=admin password=strongpassword dbname=db"
-conn = psycopg.connect(conn_string)
-cur = conn.cursor()
-
-# RabbitMQ Setup
-credentials = pika.PlainCredentials("admin", "strongpassword")
-parameters = pika.ConnectionParameters(host="localhost", credentials=credentials)
-
-connection = pika.BlockingConnection(parameters)
-channel = connection.channel()
-channel.queue_declare(queue="detection_logs", durable=True)
+from datetime import datetime
 
 
-def callback(ch, method, props, body):
-    data = pickle.loads(body)
+def db_logger(queue_name):
+    conn = psycopg.connect(
+        "host=localhost port=5432 user=admin password=strongpassword dbname=db"
+    )
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS detection_logs (
+            id SERIAL PRIMARY KEY, job_id TEXT, frame_id INTEGER, message TEXT, 
+            violation_count INTEGER, file_path TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
+        )"""
+    )
+    conn.commit()
 
-    # AUTO-CLOSE when finish
-    if "end" in data:
-        print("End of stream received. Closing database logger...")
-        ch.stop_consuming()
-        return
-
-    try:
-        cur.execute(
-            """INSERT INTO detection_logs (frame_id, message, frame_jpeg, violation_count, created_at)
-               VALUES (%s, %s, %s, %s, %s)""",
-            (
-                data["frame_id"],
-                data["message"],
-                data["frame_jpeg"],
-                data["violation_count"],
-                data["created_at"],
-            ),
+    mq = pika.BlockingConnection(
+        pika.ConnectionParameters(
+            "localhost", credentials=pika.PlainCredentials("admin", "strongpassword")
         )
-        conn.commit()
-        print(
-            f"Inserted frame {data['frame_id']} | Total Violations: {data['violation_count']}"
-        )
-        ch.basic_ack(delivery_tag=method.delivery_tag)
+    )
+    ch = mq.channel()
+    ch.queue_declare(queue=queue_name, durable=True, auto_delete=True)
 
-    except Exception as e:
-        conn.rollback()
-        print(f"Database error: {e}")
+    def callback(chx, method, _, body):
+        data = pickle.loads(body)
+        if "end" in data:
+            return chx.basic_ack(method.delivery_tag)
 
+        try:
+            cur.execute(
+                """
+                INSERT INTO detection_logs (job_id, frame_id, message, violation_count, file_path, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)""",
+                (
+                    data.get("job_id"),
+                    data.get("frame_id"),
+                    data.get("message"),
+                    data.get("violation_count"),
+                    data.get("file_path"),
+                    datetime.utcnow(),
+                ),
+            )
+            conn.commit()
+            print(f"[DB] Saved violation #{data.get('violation_count')}")
+        except Exception as e:
+            conn.rollback()
+            print(f"[DB] Error: {e}")
+        chx.basic_ack(method.delivery_tag)
 
-channel.basic_consume(queue="detection_logs", on_message_callback=callback)
-print("Log service active. Monitoring detections...")
-channel.start_consuming()
-
-# Clean up when everything  finishes
-cur.close()
-conn.close()
+    print(f"[DB] Listening on {queue_name}")
+    ch.basic_consume(queue=queue_name, on_message_callback=callback)
+    ch.start_consuming()

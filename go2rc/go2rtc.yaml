@@ -1,0 +1,5 @@
+ffmpeg:
+  bin: "C:\\Users\\mazen\\Downloads\\ffmpeg\\ffmpeg-8.0.1-essentials_build\\bin\\ffmpeg.exe"
+
+streams:
+  mystream: ffmpeg:D:\mazen\EagleVision\Task\Pizza-Store-Scooper-Violation-Detection\go2rc\Sahwb3dhaghalt(3).mp4#video=copy#loop=-1
