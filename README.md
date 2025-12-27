@@ -11,7 +11,7 @@ Built with GStreamer (frame reader), FastAPI (API), PostgreSQL (database), and R
 ---
 
 ## 🎥 Demo Video
-[![Watch the demo](demo-thumbnail.png)](https://github.com/Mazen-Ahmed12/Pizza-Store-Scooper-Violation-Detection/releases/tag/v1.0.0/demo.mp4)
+[![Watch the demo](demo.png)](https://youtu.be/5HH2f2uur60)
 
 ---
 ## Architecture
